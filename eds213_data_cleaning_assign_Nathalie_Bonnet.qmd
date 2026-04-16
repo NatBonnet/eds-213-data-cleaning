@@ -1,0 +1,100 @@
+---
+title: "EDS 213 Data Cleaning"
+author: "Nathalie Bonnet"
+date: 4/15/2026
+format: html
+warning: False
+error: False
+---
+
+# Setup libraries and read in data
+```{r}
+#| message: false  
+
+# Import libraries
+library(tidyverse)
+library(here)
+library(janitor)
+library(lubridate)
+
+# Import snow survey data csv
+snowsurvey <- read_csv(here("data", "raw", "ASDN_Snow_survey.csv")) %>% 
+  # Change all column names to lower snake case
+  clean_names()
+```
+
+# Data exploration
+```{r}
+# Look at data types and preview rows
+glimpse(snowsurvey)
+```
+Looking at the class of each column, we would expect date to be date type, and for cover data to be numeric. From here, I wanted to change the type of these data frames to their expected class. To do this I want to first look for any values across my cover data to see what would be getting coerced to NA if I made these columns numeric, because I wouldn't want to do this blindly in case these strings contained important information.
+
+# Find any non numeric data across cover columns to set to NA
+```{r}
+# Return any values that can't be coerced to numeric across all target columns
+snowsurvey %>%
+  # Choose all columns of interest
+  select(snow_cover, water_cover, land_cover, total_cover) %>%
+  # Pivot so that all values are in one column
+  pivot_longer(everything()) %>%
+  # Extract all unique values
+  distinct(value) %>%
+  # Filter for values that are coerced to NA when converting to numeric
+  filter(is.na(suppressWarnings(as.numeric(value)))) 
+```
+This search returns any non numeric character strings (ones that could not be coerced to numeric). These show variations of NA values, and one where it seems like an html string was copy and pasted into the data frame. Now these can be made to be NA. 
+
+Additionally, knowing that cover represents percent of each cover type observed at that unique site, date, plot, and location, and that these should add up to 100% total, I wanted to set any values not contained by 0 to 100 to NA.
+
+# Normalize unexpected values and convert columns to numeric
+```{r}
+# Remove any unexpected values
+snowsurvey_fixed <- snowsurvey %>%
+  # Mutate across all cover rows (6:9)
+  mutate(across(6:9, ~ {
+    # If value in any row matches the non numeric strings coerce to NA, otherwise return value
+    x <- ifelse(. %in% c(".", "n/a", "unk", "<row r=\\64\\ spans=\\1:11\\ x14ac:dyDescent=\\0.2\\>"), NA, .)
+    # Make all rows numeric
+    x <- as.numeric(x)
+    # If numeric values are greater than 100 or less than 0 make NA
+    ifelse(x > 100, NA, ifelse(x < 0, NA, x))
+  }))
+
+# Verify that all columns were made to be numeric
+class(snowsurvey_fixed$snow_cover)
+class(snowsurvey_fixed$water_cover)
+class(snowsurvey_fixed$land_cover)
+class(snowsurvey_fixed$total_cover)
+```
+All cover data were properly converted to numeric data types. Now I will validate that the total cover adds up to 100, and overwrite the total cover column to make sure the values are actually a calculation of all cover types. 
+
+# Sanity check to make sure all cover data adds up  to 100%
+```{r}
+# Filter out any data where total cover doesn't add up to 100
+snowsurvey_fixed <- snowsurvey_fixed %>% 
+  # Overwrite total cover column to ensure it is the sum of all cover data
+  mutate(total_cover = (snow_cover + water_cover + land_cover)) %>% 
+  # Filter for only rows where the total adds up to 100
+  filter(total_cover == 100)
+
+# Check all unique values in total cover
+unique(snowsurvey_fixed$total_cover)
+```
+All cover data values are now in an expected range, and all cover class rows add up to 100.
+
+As an extra step for digestion into a database I wanted to also change the date column so that the date format is preserved. 
+
+# Extra step- make date columns dates for thoroughness
+```{r}
+snowsurvey_fixed <- snowsurvey_fixed %>% 
+  mutate(date = dmy(date))
+
+class(snowsurvey_fixed$date)
+```
+As a last step, I wrote the changed data file to a csv so that it could be imported.
+
+```{r}
+# write fixed data into csv format
+write_csv(snowsurvey_fixed, file.path(here("data", "processed"), "all_cover_fixed_Nathalie_Bonnet.csv"))
+```
